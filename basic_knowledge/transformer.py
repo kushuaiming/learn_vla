@@ -2,16 +2,18 @@ import torch
 import torch.nn as nn
 import math
 
+# Mask 工具 -> PositionalEncoding -> MultiHeadAttention -> FFN -> EncoderLayer -> DecoderLayer -> Encoder/Decoder 堆叠 -> 总 Transformer.
+
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super().__init__()
-        pe = torch.zeros(max_len, d_model)
-        pos = torch.arange(0, max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, d_model) # [max_len, d_model]
+        pos = torch.arange(0, max_len).unsqueeze(1) # [max_len, 1]
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model)) # [d_modle // 2]
         pe[:, 0::2] = torch.sin(pos * div_term)
         pe[:, 1::2] = torch.cos(pos * div_term)
-        self.register_buffer('pe', pe.unsqueeze(0))
+        self.register_buffer('pe', pe.unsqueeze(0)) # 注册一个不需要梯度更新、但随模型移动(CPU/GPU)、会保存进 state_dict 的张量.
 
     def forward(self, x):
         # x: [batch, seq_len, d_model]
@@ -37,6 +39,7 @@ class MultiHeadAttention(nn.Module):
         self.w_v = nn.Linear(d_model, d_model)
         self.w_o = nn.Linear(d_model, d_model)
 
+    # 缩放点积除以√dk: 防止维度大时内积爆炸, softmax 梯度消失.
     def scaled_dot_product(self, q, k, v, mask=None):
         attn_score = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
         if mask is not None:
@@ -55,6 +58,7 @@ class MultiHeadAttention(nn.Module):
         B, h, L, dk = x.shape
         return x.transpose(1, 2).contiguous().view(B, L, h*dk)
 
+    # 多头注意力: 多组独立 QKV, 捕捉不同语义依赖.
     def forward(self, q, k, v, mask=None):
         B = q.size(0)
         q = self.split_head(self.w_q(q))
@@ -81,11 +85,13 @@ class EncoderLayer(nn.Module):
         super().__init__()
         self.attn = MultiHeadAttention(d_model, n_heads)
         self.ffn = FeedForward(d_model, d_ff)
+        # LayerNorm 是对某个样本进行 Normalization.
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
 
+    # Pre-LN vs Post-LN: 代码用 Pre-LN, 收敛更快, 现在大模型通用.
     def forward(self, x, src_mask=None):
-        # 多头自注意力，残差
+        # 多头自注意力, 残差
         attn_out = self.attn(self.norm1(x), self.norm1(x), self.norm1(x), src_mask)
         x = x + attn_out
         # FFN残差
@@ -104,6 +110,7 @@ class DecoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(d_model)
         self.norm3 = nn.LayerNorm(d_model)
 
+    # 解码器两个注意力: 自注意力屏蔽未来 Token, 交叉注意力读取源序列信息.
     def forward(self, x, enc_out, tgt_mask=None, src_tgt_mask=None):
         # 1. 解码器自注意力
         x1 = self.masked_attn(self.norm1(x), self.norm1(x), self.norm1(x), tgt_mask)
@@ -121,7 +128,7 @@ class Encoder(nn.Module):
     def __init__(self, d_model, n_heads, d_ff, n_layers):
         super().__init__()
         self.layers = nn.ModuleList([EncoderLayer(d_model, n_heads, d_ff) for _ in range(n_layers)])
-        self.norm = nn.LayerNorm(d_model)
+        self.norm = nn.LayerNorm(d_model) # 每层残差直接叠加无归一化, 多层堆叠后向量幅值持续累积变大, 所以需要最后加一个 norm.
 
     def forward(self, x, src_mask=None):
         for layer in self.layers:
@@ -147,6 +154,7 @@ class Transformer(nn.Module):
         # 嵌入层 + 位置编码
         self.src_emb = nn.Embedding(src_vocab, d_model)
         self.tgt_emb = nn.Embedding(tgt_vocab, d_model)
+        # 位置编码: Transformer 无时序感知, 正弦 PE 提供相对位置信息.
         self.pe = PositionalEncoding(d_model)
         # 编解码器
         self.encoder = Encoder(d_model, n_heads, d_ff, n_layers)
