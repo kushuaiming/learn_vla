@@ -6,8 +6,8 @@ import torch
 
 class Polygon:
     # use shapely.geometry lib
-    def __init__():
-        pass
+    def __init__(self, coner_points: List):
+        self.coner_points = coner_points  # [5, 2]
 
 
 class SafetyScenario(str, Enum):
@@ -20,8 +20,8 @@ class SafetyScenario(str, Enum):
 
 
 class SafetyRewardCalculator:
-    def __init__(self, coner_points: List):
-        self.coner_points = coner_points # [5, 2]
+    def __init__(self):
+        pass
 
     def _extract_sample_data(
         self, data_dict: Dict, pred_dict: Dict, batch_index: int
@@ -115,11 +115,25 @@ class SafetyRewardCalculator:
         ego_trajectories: torch.Tensor,  # [M, T, 13]
         ego_polygons: List[List[Polygon]],  # [M, T]
         agents_trajectory: torch.Tensor,  # [M, N, T, 12]
-        agents_polygons: Optional[List[List[List[Polygon]]]], # [M, N, T]
-        ego_s: torch.Tensor, # [M, T]
-        agents_sl: Optional[torch.Tensor], # [M, N, T, 2]
+        agents_polygons: Optional[List[List[List[Polygon]]]],  # [M, N, T]
+        ego_s: torch.Tensor,  # [M, T]
+        agents_sl: Optional[torch.Tensor],  # [M, N, T, 2]
     ) -> torch.Tensor:
-        pass
+        """Calculate the safety cost considering dynamic agents."""
+
+        M, T = ego_trajectories.shape[:2]
+        costs = torch.zeros((M, T))
+
+        if agents_trajectory is None or agents_polygons is None or agents_sl is None:
+            return costs
+
+        for m in range(M):
+            for t in range(T):
+                pass
+
+        costs = torch.clamp(costs, min=0.0)
+
+        return costs
 
     def get_reward(self, data_dict: Dict, pred_dict: Dict) -> torch.Tensor:
         """Computes safety reward based on the given input data and sampled trajectory.
