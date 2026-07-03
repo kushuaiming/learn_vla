@@ -20,8 +20,8 @@ class SafetyScenario(str, Enum):
 
 
 class SafetyRewardCalculator:
-    def __init__():
-        pass
+    def __init__(self, coner_points: List):
+        self.coner_points = coner_points # [5, 2]
 
     def _extract_sample_data(
         self, data_dict: Dict, pred_dict: Dict, batch_index: int
@@ -112,12 +112,12 @@ class SafetyRewardCalculator:
         pass
 
     def _get_dynamic_object_cost(
-        ego_trajectories: torch.Tensor,
-        ego_polygons: List[List[Polygon]],
-        agents_trajectory: torch.Tensor,
-        agents_polygons: Optional[List[List[List[Polygon]]]],
-        ego_s: torch.Tensor,
-        agents_sl: Optional[torch.Tensor],
+        ego_trajectories: torch.Tensor,  # [M, T, 13]
+        ego_polygons: List[List[Polygon]],  # [M, T]
+        agents_trajectory: torch.Tensor,  # [M, N, T, 12]
+        agents_polygons: Optional[List[List[List[Polygon]]]], # [M, N, T]
+        ego_s: torch.Tensor, # [M, T]
+        agents_sl: Optional[torch.Tensor], # [M, N, T, 2]
     ) -> torch.Tensor:
         pass
 
