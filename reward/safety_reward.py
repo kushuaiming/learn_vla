@@ -1,4 +1,6 @@
-from enum import Enum
+from __future__ import annotations
+
+from enum import Enum, IntEnum
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -8,6 +10,9 @@ class Polygon:
     # use shapely.geometry lib
     def __init__(self, coner_points: List):
         self.coner_points = coner_points  # [5, 2]
+
+    def distance(self, other_polygon: Polygon):
+        pass
 
 
 class SafetyScenario(str, Enum):
@@ -19,14 +24,51 @@ class SafetyScenario(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class AgentFutureIndex(IntEnum):
+    """Index for the future trajectory of an agent."""
+    X = 0
+    Y = 1
+    LENGTH = 2
+    WIDTH = 3
+    YAW = 4
+    CATEGORY_ID = 5
+    VX = 6
+    VY = 7
+    AX = 8
+    AY = 9
+    SIGNAL_LIGHT = 10
+    BRAKE_LIGHT = 11
+
+
+class EgoFutureIndex(IntEnum):
+    """Index for the future trajectory of the ego vehicle."""
+    X = 0
+    Y = 1
+    LENGTH = 2
+    WIDTH = 3
+    YAW = 4
+    VX = 5
+    VY = 6
+    AX = 7
+    AY = 8
+    DISTANCE_TO_FRONT_SIDE = 9
+    DISTANCE_TO_BACK_SIDE = 10
+    DISTANCE_TO_LEFT_SIDE = 11
+    DISTANCE_TO_RIGHT_SIDE = 12
+    V_LON = 13
+    A_LON = 14
+
+
 class SafetyRewardCalculator:
     def __init__(
         self,
         safety_weight: float = 20.0,
         collision_weight: float = 100.0,
+        relief_weight: float = 3.0,
     ):
         self.safety_weight = safety_weight
         self.collision_weight = collision_weight
+        self.relief_weight = relief_weight
 
     def _extract_sample_data(
         self, data_dict: Dict, pred_dict: Dict, batch_index: int
@@ -125,17 +167,57 @@ class SafetyRewardCalculator:
     def _calculate_ttc_cost_from_time_index(self):
         pass
 
-    def _get_c_src(self):
+    def _get_c_src(
+        self,
+        agent_speed: float,
+        angle_diff: float,
+        agent_s: float,
+        agent_l: float,
+        ego_s: float,
+        ego_distance_to_back_side: float,
+        ego_length: float,
+        is_vru: bool,
+    ) -> float:
+        c_src = 1.0
+        if agent_speed > 0.5:
+            if angle_diff > torch.pi * 0.75:  # 135 degrees in radians (3*pi/4)
+                c_src = 0.8  # opposite direction
+                if is_vru:  # Assuming VRU type is 2.0
+                    c_src = 1.0  # opposite VRU
+            elif angle_diff < torch.pi / 6:  # 30 degrees in radians (pi/6)
+                if torch.abs(agent_l) < 1.0:
+                    condition = (
+                        agent_s - (ego_s - ego_distance_to_back_side + 0.5 * ego_length)
+                        > 0.0
+                    )
+                    c_src = 0.8 if condition else 0.7  # Front/Rear dynamic vehicle
+                elif not (torch.isinf(agent_s)):
+                    c_src = 0.9  # Side dynamic vehicle
+            elif (
+                torch.pi / 4 <= angle_diff <= torch.pi * 0.75
+            ):  # 45 to 135 degrees in radians
+                c_src = 0.9  # Crossing vehicle
+                if is_vru:  # Assuming VRU type is 2.0
+                    c_src = 1.0  # Crossing VRU
+        return c_src
+
+    def _get_c_dis(self) -> float:
         pass
 
-    def _get_c_dis(self):
-        pass
+    def _get_c_dir(self) -> float:
+        c_dir = 0.8
+        return c_dir
 
-    def _get_c_dir(self):
-        pass
+    def _calculate_relief_cost(
+        self,
+        ego_speed: torch.Tensor,
+        agent_speed: torch.Tensor,
+        accurate_dis: float,
+        is_vru: bool,
+    ) -> float:
+        relief_cost: torch.Tensor = torch.tensor(0.0)
 
-    def _calculate_relief_cost(self):
-        pass
+        return relief_cost.item()
 
     def _calculate_dynamic_object_cost_at_one_time(
         self,
@@ -153,16 +235,33 @@ class SafetyRewardCalculator:
         if N == 0:
             return max_cost
 
+        ego_speed = torch.linalg.norm(ego_traj_point[5:7])
+
         for agent_id in range(N):
             agent_polygon = agents_polygon[agent_id]
+            agent_speed = torch.linalg.norm(agents_traj_point[agent_id, 5:7])
+            agent_type = agents_traj_point[
+                agent_id, AgentFutureIndex.CATEGORY_ID
+            ]  # objtype as float
+            is_vru = agent_type in self.vru_category_key_list
+            distance = ego_polygon.distance(agent_polygon)
 
-            c_src = self._get_c_src()
+            c_src = self._get_c_src(
+                agent_speed.item(),
+                angle_diff[agent_id].item(),
+                agents_sl[agent_id, 0].item(),
+                agents_sl[agent_id, 1].item(),
+                ego_s.item(),
+                ego_traj_point[EgoFutureIndex.DISTANCE_TO_BACK_SIDE].item(),
+                ego_traj_point[EgoFutureIndex.LENGTH].item(),
+                is_vru,
+            )
             c_dis, c_dis_collision_for_sure = self._get_c_dis()
             c_dir = self._get_c_dir()
 
             dynamic_safety_cost = self.safety_weight * c_src * c_dis * c_t * c_dir
             dynamic_collision_cost = self.collision_weight * c_dis_collision_for_sure * c_dis * c_t * c_dir
-            relief_cost = self._calculate_relief_cost()
+            relief_cost = self._calculate_relief_cost(ego_speed, agent_speed, distance, is_vru)
 
             current_agent_cost = max(dynamic_safety_cost, dynamic_collision_cost, relief_cost)
             max_cost = max(max_cost, current_agent_cost)
