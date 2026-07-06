@@ -6,8 +6,14 @@ from typing import Dict, List, Optional, Tuple
 import torch
 
 
+class interp1d:
+    # from scipy.interpolate import interp1d
+    def __init__(self):
+        pass
+
+
 class Polygon:
-    # use shapely.geometry lib
+    # use shapely.geometry lib: from shapely.geometry import Polygon
     def __init__(self, coner_points: List):
         self.coner_points = coner_points  # [5, 2]
 
@@ -26,6 +32,7 @@ class SafetyScenario(str, Enum):
 
 class AgentFutureIndex(IntEnum):
     """Index for the future trajectory of an agent."""
+
     X = 0
     Y = 1
     LENGTH = 2
@@ -42,6 +49,7 @@ class AgentFutureIndex(IntEnum):
 
 class EgoFutureIndex(IntEnum):
     """Index for the future trajectory of the ego vehicle."""
+
     X = 0
     Y = 1
     LENGTH = 2
@@ -65,10 +73,14 @@ class SafetyRewardCalculator:
         safety_weight: float = 20.0,
         collision_weight: float = 100.0,
         relief_weight: float = 3.0,
+        k_relief_safety_distance: float = 1.0,
     ):
         self.safety_weight = safety_weight
         self.collision_weight = collision_weight
         self.relief_weight = relief_weight
+        self.k_relief_safety_distance = k_relief_safety_distance
+
+        self.close_pass_table_interp = interp1d()
 
     def _extract_sample_data(
         self, data_dict: Dict, pred_dict: Dict, batch_index: int
@@ -217,6 +229,37 @@ class SafetyRewardCalculator:
     ) -> float:
         relief_cost: torch.Tensor = torch.tensor(0.0)
 
+        non_negative_obstacle_speed: torch.Tensor = torch.clamp(agent_speed, min=0.0)
+        interp_speed_limit = self.close_pass_table_interp(accurate_dis)
+        close_pass_speed_limit: torch.Tensor = (
+            torch.from_numpy(interp_speed_limit) + non_negative_obstacle_speed
+        )
+        if is_vru:
+            k_vru_reduction_speed: float = 2.5
+            close_pass_speed_limit = torch.clamp(
+                close_pass_speed_limit - k_vru_reduction_speed, min=0.0
+            )
+        else:
+            k_min_speed_limited_by_distance: float = 5.55
+            close_pass_speed_limit = torch.clamp(
+                close_pass_speed_limit, min=k_min_speed_limited_by_distance
+            )
+
+        condition: torch.Tensor = (accurate_dis <= self.k_relief_safety_distance) & (
+            ego_speed >= close_pass_speed_limit
+        )
+        if torch.any(condition):
+            k_relief_over_speed_threshold: float = (4.0,)
+            over_speed: torch.Tensor = ego_speed - close_pass_speed_limit
+            over_speed_condition: torch.Tensor = (
+                over_speed > k_relief_over_speed_threshold
+            )
+            relief_normalized_cost: torch.Tensor = torch.where(
+                over_speed_condition,
+                torch.tensor(1.0),
+                over_speed / k_relief_over_speed_threshold,
+            )
+            relief_cost = self.relief_weight * relief_normalized_cost
         return relief_cost.item()
 
     def _calculate_dynamic_object_cost_at_one_time(
@@ -260,10 +303,16 @@ class SafetyRewardCalculator:
             c_dir = self._get_c_dir()
 
             dynamic_safety_cost = self.safety_weight * c_src * c_dis * c_t * c_dir
-            dynamic_collision_cost = self.collision_weight * c_dis_collision_for_sure * c_dis * c_t * c_dir
-            relief_cost = self._calculate_relief_cost(ego_speed, agent_speed, distance, is_vru)
+            dynamic_collision_cost = (
+                self.collision_weight * c_dis_collision_for_sure * c_dis * c_t * c_dir
+            )
+            relief_cost = self._calculate_relief_cost(
+                ego_speed, agent_speed, distance, is_vru
+            )
 
-            current_agent_cost = max(dynamic_safety_cost, dynamic_collision_cost, relief_cost)
+            current_agent_cost = max(
+                dynamic_safety_cost, dynamic_collision_cost, relief_cost
+            )
             max_cost = max(max_cost, current_agent_cost)
 
         return max_cost
