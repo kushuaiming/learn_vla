@@ -235,6 +235,8 @@ class SafetyRewardCalculator:
         k_lon_safe_dis_speed_interp = interp1d()
         k_lon_safe_dis_dynamic = float(k_lon_safe_dis_speed_interp(ego_speed))
 
+        # agent 在前, ds = agent 后边缘 − ego 前边缘
+        # agent 在后, ds = ego 后边缘 − agent 前边缘
         ds = 100.0
         is_agent_back = False
         if agent_s > ego_s - ego_distance_to_back_side + 0.5 * ego_length:
@@ -267,8 +269,25 @@ class SafetyRewardCalculator:
         )
         return c_dis, c_dis_collision_for_sure
 
-    def _get_c_dir(self) -> float:
+    def _get_c_dir(self, ego_polygon: Polygon, agent_polygon: Polygon, ego_yaw: float) -> float:
+        # 侧面碰撞(c_dir=1.0)比前后碰撞(c_dir=0.8)危险性更高(车辆侧面防护弱).
         c_dir = 0.8
+
+        if ego_polygon.intersects(agent_polygon):
+            # Calculate the relative position of agent center to ego center
+            dx = agent_polygon.centroid.x - ego_polygon.centroid.x
+            dy = agent_polygon.centroid.y - ego_polygon.centroid.y
+
+            # Rotate the relative position to ego's coordinate system
+            rotated_dx = dx * torch.cos(ego_yaw) + dy * torch.sin(ego_yaw)
+            rotated_dy = -dx * torch.sin(ego_yaw) + dy * torch.cos(ego_yaw)
+
+            # Determine the collision direction based on the rotated position
+            if abs(rotated_dx) > abs(rotated_dy):
+                c_dir = 0.8  # Front/Rear collision
+            else:
+                c_dir = 1.0  # Side collision
+
         return c_dir
 
     def _calculate_relief_cost(
@@ -278,6 +297,8 @@ class SafetyRewardCalculator:
         accurate_dis: float,
         is_vru: bool,
     ) -> float:
+        """在近距离通过障碍物时, 如果 ego 速度超过了基于距离和障碍物速度计算出的限速, 就产生惩罚
+        """
         relief_cost: torch.Tensor = torch.tensor(0.0)
 
         non_negative_obstacle_speed: torch.Tensor = torch.clamp(agent_speed, min=0.0)
@@ -363,7 +384,11 @@ class SafetyRewardCalculator:
                 agents_traj_point[agent_id, AgentFutureIndex.LENGTH].item(),
                 agents_traj_point[agent_id, AgentFutureIndex.WIDTH].item(),
             )
-            c_dir = self._get_c_dir()
+            c_dir = self._get_c_dir(
+                ego_polygon,
+                agent_polygon,
+                ego_traj_point[EgoFutureIndex.YAW].item(),
+            )
 
             dynamic_safety_cost = self.safety_weight * c_src * c_dis * c_t * c_dir
             dynamic_collision_cost = (
@@ -402,6 +427,7 @@ class SafetyRewardCalculator:
             angle_diff = self._calculate_angle_diff()
 
             for t in range(T):
+                # c_t 衡量"这个时刻离碰撞有多近".
                 c_t = self._calculate_ttc_cost_from_time_index(collision_t_idx, t)
 
                 cost_m_t = self._calculate_dynamic_object_cost_at_one_time(
