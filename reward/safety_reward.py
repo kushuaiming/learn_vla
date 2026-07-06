@@ -20,8 +20,13 @@ class SafetyScenario(str, Enum):
 
 
 class SafetyRewardCalculator:
-    def __init__(self):
-        pass
+    def __init__(
+        self,
+        safety_weight: float = 20.0,
+        collision_weight: float = 100.0,
+    ):
+        self.safety_weight = safety_weight
+        self.collision_weight = collision_weight
 
     def _extract_sample_data(
         self, data_dict: Dict, pred_dict: Dict, batch_index: int
@@ -111,14 +116,68 @@ class SafetyRewardCalculator:
     ):
         pass
 
+    def _calculate_ttc_index(self):
+        pass
+
+    def _calculate_angle_diff(self):
+        pass
+
+    def _calculate_ttc_cost_from_time_index(self):
+        pass
+
+    def _get_c_src(self):
+        pass
+
+    def _get_c_dis(self):
+        pass
+
+    def _get_c_dir(self):
+        pass
+
+    def _calculate_relief_cost(self):
+        pass
+
+    def _calculate_dynamic_object_cost_at_one_time(
+        self,
+        ego_traj_point: torch.Tensor,  # [13,]
+        ego_polygon: List[Polygon],  # [1,]
+        agents_traj_point: torch.Tensor,  # [N, 12]
+        agents_polygon: List[Polygon],  # [N,]
+        ego_s: torch.Tensor,  # [1,]
+        agents_sl: torch.Tensor,  # [N, 2]
+        angle_diff: torch.Tensor,  # [N,]
+        c_t: float,
+    ):
+        N = len(agents_polygon)
+        max_cost = 0.0
+        if N == 0:
+            return max_cost
+
+        for agent_id in range(N):
+            agent_polygon = agents_polygon[agent_id]
+
+            c_src = self._get_c_src()
+            c_dis, c_dis_collision_for_sure = self._get_c_dis()
+            c_dir = self._get_c_dir()
+
+            dynamic_safety_cost = self.safety_weight * c_src * c_dis * c_t * c_dir
+            dynamic_collision_cost = self.collision_weight * c_dis_collision_for_sure * c_dis * c_t * c_dir
+            relief_cost = self._calculate_relief_cost()
+
+            current_agent_cost = max(dynamic_safety_cost, dynamic_collision_cost, relief_cost)
+            max_cost = max(max_cost, current_agent_cost)
+
+        return max_cost
+
     def _get_dynamic_object_cost(
+        self,
         ego_trajectories: torch.Tensor,  # [M, T, 13]
         ego_polygons: List[List[Polygon]],  # [M, T]
         agents_trajectory: torch.Tensor,  # [M, N, T, 12]
         agents_polygons: Optional[List[List[List[Polygon]]]],  # [M, N, T]
         ego_s: torch.Tensor,  # [M, T]
         agents_sl: Optional[torch.Tensor],  # [M, N, T, 2]
-    ) -> torch.Tensor:
+    ) -> torch.Tensor:  # [M, T]
         """Calculate the safety cost considering dynamic agents."""
 
         M, T = ego_trajectories.shape[:2]
@@ -128,8 +187,26 @@ class SafetyRewardCalculator:
             return costs
 
         for m in range(M):
+            collision_t_idx = self._calculate_ttc_index()
+            angle_diff = self._calculate_angle_diff()
+
             for t in range(T):
-                pass
+                c_t = self._calculate_ttc_cost_from_time_index(collision_t_idx, t)
+
+                cost_m_t = self._calculate_dynamic_object_cost_at_one_time(
+                    ego_traj_point=ego_trajectories[m, t],
+                    ego_polygon=ego_polygons[m][t],
+                    agents_traj_point=agents_trajectory[m, :, t],
+                    agents_polygon=[
+                        agents_polygons[m][n][t]
+                        for n in range(agents_trajectory.shape[1])
+                    ],
+                    ego_s=ego_s[m, t],
+                    agents_sl=agents_sl[m, :, t],
+                    angle_diff=angle_diff[:, t],
+                    c_t=c_t,
+                )
+                costs[m, t] = cost_m_t
 
         costs = torch.clamp(costs, min=0.0)
 
