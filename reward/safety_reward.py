@@ -213,8 +213,59 @@ class SafetyRewardCalculator:
                     c_src = 1.0  # Crossing VRU
         return c_src
 
-    def _get_c_dis(self) -> float:
-        pass
+    def _get_c_dis(
+        self,
+        ego_speed: float,
+        distance: float,
+        agent_s: float,
+        agent_l: float,
+        ego_s: float,
+        ego_length: float,
+        ego_width: float,
+        ego_distance_to_front_side: float,
+        ego_distance_to_back_side: float,
+        agent_length: float,
+        agent_width: float,
+    ) -> float:
+        k_accurate_safe_dis = 1.0
+        k_lat_safe_dis = 1.0
+        k_accurate_collision_dis = 0.2
+        k_lon_collision_dis = 2.0
+        k_lat_collision_dis = 0.2
+        k_lon_safe_dis_speed_interp = interp1d()
+        k_lon_safe_dis_dynamic = float(k_lon_safe_dis_speed_interp(ego_speed))
+
+        ds = 100.0
+        is_agent_back = False
+        if agent_s > ego_s - ego_distance_to_back_side + 0.5 * ego_length:
+            ds = (
+                agent_s - 0.5 * agent_length - (ego_s + ego_distance_to_front_side)
+            ).item()
+        else:
+            ds = (
+                ego_s - ego_distance_to_back_side - (agent_s + 0.5 * agent_length)
+            ).item()
+            is_agent_back = True
+        ds = max(0.0, ds)
+
+        dl = (agent_l.abs() - 0.5 * ego_width - 0.5 * agent_width).item()
+        dl = max(0.0, dl)
+
+        c_dis = max(
+            max(0.0, 1.0 - distance / k_accurate_safe_dis),
+            (
+                max(0.0, 1.0 - ds / k_lon_safe_dis_dynamic)
+                * max(0.0, 1.0 - dl / k_lat_safe_dis)
+            ),
+        )
+        c_dis_collision_for_sure = max(
+            max(0.0, 1.0 - distance / k_accurate_collision_dis),
+            (
+                max(0.0, 1.0 - ds / k_lon_collision_dis)
+                * max(0.0, 1.0 - dl / k_lat_collision_dis)
+            ),
+        )
+        return c_dis, c_dis_collision_for_sure
 
     def _get_c_dir(self) -> float:
         c_dir = 0.8
@@ -299,7 +350,19 @@ class SafetyRewardCalculator:
                 ego_traj_point[EgoFutureIndex.LENGTH].item(),
                 is_vru,
             )
-            c_dis, c_dis_collision_for_sure = self._get_c_dis()
+            c_dis, c_dis_collision_for_sure = self._get_c_dis(
+                ego_speed.item(),
+                distance,
+                agents_sl[agent_id, 0].item(),
+                agents_sl[agent_id, 1].item(),
+                ego_s.item(),
+                ego_traj_point[EgoFutureIndex.LENGTH].item(),
+                ego_traj_point[EgoFutureIndex.WIDTH].item(),
+                ego_traj_point[EgoFutureIndex.DISTANCE_TO_FRONT_SIDE].item(),
+                ego_traj_point[EgoFutureIndex.DISTANCE_TO_BACK_SIDE].item(),
+                agents_traj_point[agent_id, AgentFutureIndex.LENGTH].item(),
+                agents_traj_point[agent_id, AgentFutureIndex.WIDTH].item(),
+            )
             c_dir = self._get_c_dir()
 
             dynamic_safety_cost = self.safety_weight * c_src * c_dis * c_t * c_dir
